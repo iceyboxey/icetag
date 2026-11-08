@@ -1,0 +1,10 @@
+{
+  "name": "monke-multiplayer",
+  "version": "1.0.0",
+  "description": "WebSocket relay for the Monke gorilla-tag style WebXR game",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "ws": "^8.18.0" },
+  "license": "MIT"
+}
