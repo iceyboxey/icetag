@@ -10,6 +10,7 @@ const PORT = process.env.PORT || 8080;
 const MAX_PLAYERS = 16;          // per room
 const TICK_MS = 66;              // about 15 snapshots per second
 const MAX_MSGS_PER_SEC = 40;     // per player, extra messages are dropped
+const EXTRA_LEN = 8;             // optional tail: colour r,g,b (-1 = none), then cosmetic ids head, face, body, left hand, right hand (0 = none)
 const STATE_LEN = 18;            // head xyz, yaw, then left and right hand: xyz + quaternion xyzw
 
 const PUBLIC_DIR = path.join(__dirname, 'public');
@@ -38,9 +39,9 @@ const cleanRoom = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9_\-]/g, 
 const send = (ws, obj) => { if (ws.readyState === 1) ws.send(JSON.stringify(obj)); };
 
 function validState(a) {
-  if (!Array.isArray(a) || a.length !== STATE_LEN) return null;
-  const out = new Array(STATE_LEN);
-  for (let i = 0; i < STATE_LEN; i++) {
+  if (!Array.isArray(a) || (a.length !== STATE_LEN && a.length !== STATE_LEN + EXTRA_LEN)) return null;
+  const out = new Array(a.length);
+  for (let i = 0; i < a.length; i++) {
     const v = a[i];
     if (typeof v !== 'number' || !Number.isFinite(v) || Math.abs(v) > 10000) return null;
     out[i] = Math.round(v * 1000) / 1000;
@@ -65,7 +66,7 @@ wss.on('connection', (ws) => {
       c.name = cleanName(m.name); c.room = room;
       const peers = [...members.values()].map((p) => ({ id: p.id, name: p.name }));
       members.set(c.id, c); rooms.set(room, members);
-      send(ws, { t: 'welcome', id: c.id, room, peers });
+      send(ws, { t: 'welcome', id: c.id, room, peers, v: 2 });
       for (const p of members.values()) if (p !== c) send(p.ws, { t: 'join', id: c.id, name: c.name });
     } else if (m.t === 's' && c.room) {
       const st = validState(m.s);
