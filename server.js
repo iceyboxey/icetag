@@ -9,7 +9,7 @@ const { WebSocketServer } = require('ws');
 const PORT = process.env.PORT || 8080;
 const MAX_PLAYERS = 16;          // per room
 const TICK_MS = 66;              // about 15 snapshots per second
-const MAX_MSGS_PER_SEC = 40;     // per player, extra messages are dropped
+const MAX_MSGS_PER_SEC = 120;    // per player, extra messages are dropped (voice chat set-up sends a burst of small messages)
 const EXTRA_LEN = 8;             // optional tail: colour r,g,b (-1 = none), then cosmetic ids head, face, body, left hand, right hand (0 = none)
 const STATE_LEN = 18;            // head xyz, yaw, then left and right hand: xyz + quaternion xyzw
 
@@ -30,7 +30,7 @@ const server = http.createServer((req, res) => {
   res.end('Monke multiplayer server is running.\n');
 });
 
-const wss = new WebSocketServer({ server, maxPayload: 2048 });
+const wss = new WebSocketServer({ server, maxPayload: 8192 });
 const rooms = new Map();   // room name -> Map(id -> client)
 let nextId = 1;
 
@@ -66,11 +66,18 @@ wss.on('connection', (ws) => {
       c.name = cleanName(m.name); c.room = room;
       const peers = [...members.values()].map((p) => ({ id: p.id, name: p.name }));
       members.set(c.id, c); rooms.set(room, members);
-      send(ws, { t: 'welcome', id: c.id, room, peers, v: 2 });
+      send(ws, { t: 'welcome', id: c.id, room, peers, v: 2, voice: true });
       for (const p of members.values()) if (p !== c) send(p.ws, { t: 'join', id: c.id, name: c.name });
     } else if (m.t === 's' && c.room) {
       const st = validState(m.s);
       if (st) { c.state = st; c.dirty = true; }
+    } else if (m.t === 'sig' && c.room) {
+      // voice chat set-up (WebRTC offers, answers, ICE candidates): pass it on to one player in the same room, the audio itself never touches the server
+      const to = (rooms.get(c.room) || new Map()).get(Number(m.to));
+      if (to && to !== c && m.d && typeof m.d === 'object') {
+        const txt = JSON.stringify(m.d);
+        if (txt.length < 6000) send(to.ws, { t: 'sig', from: c.id, d: m.d });
+      }
     } else if (m.t === 'ping') {
       send(ws, { t: 'pong' });
     }
