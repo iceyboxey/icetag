@@ -1,20 +1,33 @@
 'use strict';
 // Cloud browser for the VR monitor: a real Chromium on this server opens the page and sends a picture of it about 5 times a second.
 // The game sends back clicks, scrolling and typing. Needs the "playwright" package and Chromium (see Dockerfile).
-let chromium = null;
-try { ({ chromium } = require('playwright')); } catch (e) { try { ({ chromium } = require('playwright-core')); } catch (e2) { /* no browser installed */ } }
+let pw = null;
+try { pw = require('playwright'); } catch (e) { try { pw = require('playwright-core'); } catch (e2) { /* no browser installed */ } }
+const chromium = pw && pw.chromium;
+const ENGINE = (process.env.BROWSER_ENGINE || 'chromium').toLowerCase();   // chromium's headless shell with tiny-memory flags fits a 512 MB free instance best; BROWSER_ENGINE=firefox is available
 const dns = require('dns').promises;
 const net = require('net');
 
-const VW = 1100, VH = 703, FRAME_MS = 200;
-const MAX_SESSIONS = Math.max(1, parseInt(process.env.BROWSER_MAX || '2', 10) || 2);
+const VW = 880, VH = 562, FRAME_MS = 200;
+const MAX_SESSIONS = Math.max(1, parseInt(process.env.BROWSER_MAX || '1', 10) || 2);
 const ALLOW_PRIVATE = process.env.BROWSER_ALLOW_PRIVATE === '1';   // only for testing on one machine
 const IDLE_MS = 5 * 60 * 1000;
-let browserP = null, sessions = 0;
+const LIGHT = ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--mute-audio', '--single-process', '--no-zygote', '--renderer-process-limit=1', '--disable-extensions', '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-default-apps', '--disable-breakpad', '--disable-features=site-per-process,IsolateOrigins,TranslateUI', '--js-flags=--max-old-space-size=' + (parseInt(process.env.BROWSER_HEAP_MB || '512', 10) || 512)];
+let browserP = null, sessions = 0, closeT = null;
+function maybeClose() {   // give the memory back when nobody is browsing
+  clearTimeout(closeT);
+  closeT = setTimeout(() => { if (sessions === 0 && browserP) { const b = browserP; browserP = null; b.then((x) => x.close()).catch(() => {}); } }, 20000);
+}
 
 function getBrowser() {
+  clearTimeout(closeT);
   if (!browserP) {
-    browserP = chromium.launch({ args: ['--no-sandbox', '--disable-dev-shm-usage', '--disable-gpu', '--mute-audio'] })
+    const useFx = ENGINE === 'firefox' && pw && pw.firefox;
+    const first = useFx
+      ? pw.firefox.launch({ firefoxUserPrefs: { 'media.autoplay.default': 5, 'media.peerconnection.enabled': false, 'dom.ipc.processCount': 1, 'browser.cache.memory.capacity': 16384, 'permissions.default.geo': 2 } })
+      : chromium.launch({ args: LIGHT });
+    browserP = first
+      .catch((e) => { if (!useFx) throw e; console.log('[browser] firefox failed, using chromium:', e.message); return chromium.launch({ args: LIGHT }); })
       .then((b) => { b.on('disconnected', () => { browserP = null; }); return b; })
       .catch((e) => { browserP = null; throw e; });
   }
@@ -68,6 +81,7 @@ function attach(wss) {
     const end = async () => {
       if (!alive) return; alive = false; sessions--; clearInterval(timer);
       try { if (ctx) await ctx.close(); } catch (e) { /* already gone */ }
+      if (sessions === 0) maybeClose();
     };
     ws.on('close', end); ws.on('error', end);
     (async () => {
@@ -76,6 +90,7 @@ function attach(wss) {
       await ctx.route('**/*', async (route) => {   // every request, not only the first page, must be to a public address
         const u = route.request().url();
         if (/^(data|blob|about):/i.test(u)) return route.continue();
+        if (['media', 'font'].includes(route.request().resourceType())) return route.abort();   // videos and web fonts are heavy and not needed
         return (await safeUrl(u)) ? route.continue() : route.abort();
       });
       page = await ctx.newPage();
